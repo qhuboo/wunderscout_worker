@@ -113,6 +113,7 @@ def yolo_detection(local_path, output_path):
     video_path = local_path
     print(f"WORKER: This is the video_path: {video_path}")
 
+    # Pre-training, learning team colors
     crops = create_player_crops(video_path)
     embeddings = extract_embeddings(crops)
 
@@ -122,10 +123,10 @@ def yolo_detection(local_path, output_path):
     projections = REDUCER.fit_transform(embeddings)
     clustering_model = CLUSTERING_MODEL.fit(projections)
 
+    # Inference
     model_trained = YOLO("/app/src/wunderscout_worker/best.pt")
 
     frame_generator = sv.get_video_frames_generator(video_path)
-    frame = next(frame_generator)
 
     tracker = sv.ByteTrack()
 
@@ -141,6 +142,9 @@ def yolo_detection(local_path, output_path):
         fps,
         (frame_width, frame_height),
     )
+
+    # Team History
+    team_votes = {}
 
     for i, frame in enumerate(frame_generator):
         print(f"WORKER: Processing frame {i}")
@@ -161,14 +165,50 @@ def yolo_detection(local_path, output_path):
         players_detections = all_detections[all_detections.class_id == PLAYER_ID]
         referees_detections = all_detections[all_detections.class_id == REFEREE_ID]
 
-        players_crops = [sv.crop_image(frame, xyxy) for xyxy in players_detections.xyxy]
-        player_embeddings = extract_embeddings(players_crops)
-        player_projection = REDUCER.transform(player_embeddings)
-        players_detections.class_id = clustering_model.predict(player_projection)
+        # Process only if we detected players this frame
+        if len(players_detections) > 0:
+            players_crops = [
+                sv.crop_image(frame, xyxy) for xyxy in players_detections.xyxy
+            ]
 
-        goalkeepers_detections.class_id = resolve_goalkeepers_team_id(
-            players_detections, goalkeepers_detections
-        )
+            pil_crops = [sv.cv2_to_pillow(c) for c in players_crops]
+
+            # Current frame opinion
+            player_embeddings = extract_embeddings(pil_crops)
+            player_projection = REDUCER.transform(player_embeddings)
+            current_frame_predictions = clustering_model.predict(player_projection)
+
+            final_team_ids = []
+
+            # Iterate through detected players and check history
+            for j, tracker_id in enumerate(players_detections.tracker_id):
+                predicted_team = current_frame_predictions[j]
+
+                # Initialize list if new player
+                if tracker_id not in team_votes:
+                    team_votes[tracker_id] = []
+
+                # Add vote
+                team_votes[tracker_id].append(predicted_team)
+
+                # Keep history short
+                if len(team_votes[tracker_id]) > 50:
+                    team_votes[tracker_id].pop(0)
+
+                # Calculate winner
+                average_vote = sum(team_votes[tracker_id]) / len(team_votes[tracker_id])
+                consensus_team = 1 if average_vote > 0.5 else 0
+
+                final_team_ids.append(consensus_team)
+
+            # Apply consensus team
+            players_detections.class_id = np.array(final_team_ids)
+
+        # Resolve goalkeepers based on updated player teams
+        if len(players_detections) > 0 and len(goalkeepers_detections) > 0:
+            goalkeepers_detections.class_id = resolve_goalkeepers_team_id(
+                players_detections, goalkeepers_detections
+            )
 
         referees_detections.class_id -= 1
 
