@@ -8,18 +8,11 @@ dependencies = [
     "aio-pika>=9.5.7",
     "aioboto3>=15.1.0",
     "aiofiles>=24.1.0",
-    "more-itertools>=10.8.0",
-    "protobuf>=6.32.1",
     "psycopg-pool>=3.2.6",
-    "psycopg[binary]>=3.2.10",
     "python-dotenv>=1.1.1",
     "redis>=6.4.0",
-    "scikit-learn>=1.7.2",
-    "sentencepiece>=0.2.1",
-    "supervision>=0.26.1",
-    "transformers>=4.56.2",
-    "ultralytics>=8.3.190",
-    "umap-learn>=0.5.9.post2",
+    "torch>=2.8.0",
+    "wunderscout>=0.1.5",
 ]
 
 [build-system]
@@ -28,6 +21,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/wunderscout_worker"]
+
+[tool.deptry.package_module_name_map]
+python-dotenv = ["dotenv"]
 
 [dependency-groups]
 dev = [

@@ -25,3 +25,9 @@ secrets/
 *.swp
 .idea/
 .vscode/
+
+# Test data
+data/
+
+# Config
+pyrightconfig.json
