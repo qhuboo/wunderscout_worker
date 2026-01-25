@@ -4,13 +4,14 @@ import asyncio
 import aio_pika
 import aiofiles
 import threading
+from pathlib import Path
 from datetime import datetime, timezone
 from .lib import process_context, get_redis
 from .engine import process_video
-from wunderscout import ScoutingPipeline
+from wunderscout import Detector
 
 
-async def process_message(message, ctx, pipeline):
+async def process_message(message, ctx, detector):
     async with message.process():
         body_text = message.body.decode()
         body = json.loads(body_text)
@@ -65,10 +66,10 @@ async def process_message(message, ctx, pipeline):
             }
             await redis.publish("job_updates", json.dumps(message))
 
-        # Yolo Detection
+        # Detection
         try:
-            await asyncio.to_thread(
-                process_video, local_path, output_path, job_id, pipeline
+            result = await asyncio.to_thread(
+                process_video, local_path, output_path, job_id, detector
             )
 
             finish_time = datetime.now(timezone.utc)
@@ -85,50 +86,39 @@ async def process_message(message, ctx, pipeline):
                 await redis.publish("job_updates", json.dumps(message))
 
             # S3 upload
-            print("WORKER: Uploading results to S3 ...")
-            output_key = f"results/{job_id}.mp4"
+            print("WORKER[process_message]: Uploading results to S3 ...")
+            output_key = f"results/{job_id}_processed.mp4"
             async with aiofiles.open(output_path, "rb") as f:
                 file_data = await f.read()
                 await s3.put_object(Bucket=bucket_name, Key=output_key, Body=file_data)
 
-            histogram_json_path = (
-                "/app/src/wunderscout_worker/heatmap/player17_histogram.json"
-            )
-            histogram_key = f"results/{job_id}_histogram.json"
+            # Upload all data files
+            heatmap_dir = Path(f"/tmp/{job_id}/heatmap")
 
-            kde_json_path = "/app/src/wunderscout_worker/heatmap/player17_kde.json"
-            kde_key = f"results/{job_id}_kde.json"
-
-            passnetwork_json_path = (
-                "/app/src/wunderscout_worker/pass_network/pass_network.json"
-            )
-            passnetwork_key = f"results/{job_id}_passnetwork.json"
-
-            async with aiofiles.open(histogram_json_path, "rb") as f:
-                file_data = await f.read()
-                await s3.put_object(
-                    Bucket=bucket_name,
-                    Key=histogram_key,
-                    Body=file_data,
+            if heatmap_dir.exists():
+                print(
+                    "WORKER[process_message][uploading artifacts]: heatmap_dir exists"
+                )
+                heatmap_files = list(heatmap_dir.glob("*.json"))
+                print(
+                    f"WORKER[process_message]: uploading {len(heatmap_files)} heatmap files."
                 )
 
-            async with aiofiles.open(kde_json_path, "rb") as f:
-                file_data = await f.read()
-                await s3.put_object(
-                    Bucket=bucket_name,
-                    Key=kde_key,
-                    Body=file_data,
+                for heatmap_file in heatmap_files:
+                    s3_key = f"results/{job_id}/heatmap/{heatmap_file.name}"
+
+                    async with aiofiles.open(heatmap_file, "rb") as f:
+                        file_data = await f.read()
+                        await s3.put_object(
+                            Bucket=bucket_name,
+                            Key=s3_key,
+                            Body=file_data,
+                        )
+            else:
+                print(
+                    "WORKER[process_message][uploading artifacts]: heatmap_dir did not exist"
                 )
 
-            async with aiofiles.open(passnetwork_json_path, "rb") as f:
-                file_data = await f.read()
-                await s3.put_object(
-                    Bucket=bucket_name,
-                    Key=passnetwork_key,
-                    Body=file_data,
-                )
-
-            # Postgres Metadata
             # CREATE TABLE jobs (
             #   id UUID PRIMARY KEY,
             #   s3_key TEXT NOT NULL,
@@ -138,22 +128,47 @@ async def process_message(message, ctx, pipeline):
             #   finished_at TIMESTAMPTZ
             # );
             #
-            # CREATE TABLE job_results (
+            # CREATE TABLE annotated_videos (
             #   id SERIAL PRIMARY KEY,
             #   job_id UUID NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
             #   s3_key TEXT NOT NULL,
             #   created_at TIMESTAMPTZ DEFAULT now()
             # );
             #
-            # CREATE TABLE job_artifacts (
-            #   id SERIAL PRIMARY KEY,
+            # CREATE TABLE games (
+            #   id UUID PRIMARY KEY,
             #   job_id UUID NOT NULL REFERENCES jobs(id),
-            #   artifact_name TEXT,
-            #   artifact_type TEXT,
+            #   created_at TIMESTAMPTZ DEFAULT now()
+            # );
+            #
+            # CREATE TABLE teams (
+            #   id SERIAL PRIMARY KEY,
+            #   game_id UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+            #   detector_team_id INTEGER NOT NULL,
+            #   team_name TEXT NOT NULL,
+            #
+            #   UNIQUE(game_id, detector_team_id)
+            # );
+            #
+            # CREATE TABLE players (
+            #   id SERIAL PRIMARY KEY,
+            #   game_id UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+            #   tracker_id INTEGER NOT NULL,
+            #   team_id INTEGER NOT NULL REFERENCES teams(id),
+            #   display_name TEXT,
+            #
+            #   UNIQUE(game_id, tracker_id)
+            # );
+            #
+            # CREATE TABLE player_analytics (
+            #   id SERIAL PRIMARY KEY,
+            #   player_id INTEGER NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+            #   artifact_type TEXT NOT NULL,
             #   s3_key TEXT NOT NULL,
             #   created_at TIMESTAMPTZ DEFAULT now()
             # );
-            print("WORKER: Uploading metadata to postgres ...")
+
+            print("WORKER[process_message]: Uploading data to postgres ...")
             async with ctx["pg"].connection() as conn:
                 async with conn.transaction():
                     async with conn.cursor() as cur:
@@ -163,24 +178,61 @@ async def process_message(message, ctx, pipeline):
                         )
 
                         await cur.execute(
-                            "INSERT INTO job_results (job_id, s3_key) VALUES (%s, %s)",
+                            "INSERT INTO annotated_videos (job_id, s3_key) VALUES (%s, %s)",
                             (job_id, output_key),
                         )
 
+                        # Insert game and get game_id
                         await cur.execute(
-                            "INSERT INTO job_artifacts (job_id, artifact_name, artifact_type, s3_key) VALUES (%s, %s, %s, %s)",
-                            (job_id, "histogram", "json", histogram_key),
+                            "INSERT INTO games (job_id) VALUES (%s)",
+                            (job_id),
                         )
+                        game_id = (await cur.fetchone())[0]
 
-                        await cur.execute(
-                            "INSERT INTO job_artifacts (job_id, artifact_name, artifact_type, s3_key) VALUES (%s, %s, %s, %s)",
-                            (job_id, "kde", "json", kde_key),
-                        )
+                        # Insert teams and get db team ids
+                        team_ids = {}  # Maps detector_team_id -> db team id
+                        for detector_team_id in [0, 1]:
+                            await cur.execute(
+                                "INSERT INTO teams (game_id, detector_team_id, team_name) VALUES (%s, %s, %s) RETURNING id",
+                                (
+                                    game_id,
+                                    detector_team_id,
+                                    f"Team {detector_team_id + 1}",
+                                ),
+                            )
+                            team_ids[detector_team_id] = (await cur.fetchone())[0]
 
-                        await cur.execute(
-                            "INSERT INTO job_artifacts (job_id, artifact_name, artifact_type, s3_key) VALUES (%s, %s, %s, %s)",
-                            (job_id, "passnetwork", "json", passnetwork_key),
-                        )
+                        # Insert player analytics
+                        for (
+                            tracker_id,
+                            detector_team_id,
+                        ) in result.team_assignments.items():
+                            db_team_id = team_ids[detector_team_id]
+                            await cur.execute(
+                                "INSERT INTO players (game_id, tracker_id, team_id) VALUES (%s, %s, %s) RETURNING id",
+                                (game_id, tracker_id, db_team_id),
+                            )
+                            db_player_id = (await cur.fetchone())[0]
+
+                            if heatmap_dir.exists():
+                                for heatmap_file in heatmap_dir.glob("*.json"):
+                                    # Parse filename get type
+                                    # Format: player{id}_{histogram | kde}.json
+                                    filename = heatmap_file.stem
+                                    parts = filename.split("_")
+
+                                    if len(parts) == 2:
+                                        artifact_type = parts[1]  # "histogram" or "kde"
+                                        s3_key = f"results/{job_id}/heatmaps/{heatmap_file.name}"
+
+                                        await cur.execute(
+                                            "INSERT INTO player_analytics (player_id, artifact_type, s3_key) VALUES (%s, %s, %s)",
+                                            (
+                                                db_player_id,
+                                                artifact_type,
+                                                s3_key,
+                                            ),
+                                        )
 
             async with get_redis(ctx) as redis:
                 message = {
@@ -197,7 +249,10 @@ async def process_message(message, ctx, pipeline):
 
 async def wrap_context(process_id):
     async with process_context() as ctx:
-        pipeline = ScoutingPipeline(player_weights="", field_weights="")
+        detector = Detector(
+            player_weights="/app/data/models/player_detection.pt",
+            field_weights="/app/data/models/field_keypoint_detection.pt",
+        )
         rabbitmq_url = os.getenv("RABBITMQ_URL")
         if rabbitmq_url is None:
             raise RuntimeError("RABBITMQ_URL env variable is required.")
@@ -211,7 +266,7 @@ async def wrap_context(process_id):
 
                 async def on_message(message):
                     try:
-                        await process_message(message, ctx, pipeline)
+                        await process_message(message, ctx, detector)
                     except Exception as e:
                         print(f"Worker {process_id}: Error processing message: {e}")
                         import traceback
