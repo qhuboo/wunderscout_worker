@@ -11,24 +11,28 @@ async def process_context():
     async with session.client("s3") as s3:
         database_url = os.getenv("DATABASE_URL")
         if database_url is None:
-            raise RuntimeError("DATABASE_URL env variable is required.")
-        print(f"Creating pg pool with URL: {database_url}")
+            raise RuntimeError(
+                "WORKER[process_context][RuntimeError]: DATABASE_URL env variable is required."
+            )
+        print(f"WORKER[process_context]: Creating pg pool with URL: {database_url}")
         pool = AsyncConnectionPool(database_url)
         await pool.open()
-        print("PG pool opened.")
+        print("WORKER[process_context]: PG pool opened.")
         await pool.wait()
-        print("PG pool ready")
+        print("WORKER[process_context]: PG pool ready.")
 
         redis_url = os.getenv("REDIS_URL")
         if redis_url is None:
-            raise RuntimeError("REDIS_URL env variable is required.")
+            raise RuntimeError(
+                "WORKER[process_context][RuntimeError]: REDIS_URL env variable is required."
+            )
         redis = aioredis.ConnectionPool.from_url(redis_url)
 
-    try:
-        yield {"s3": s3, "pg": pool, "redis": redis}
-    finally:
-        await pool.close()
-        await redis.aclose()
+        try:
+            yield {"s3": s3, "pg": pool, "redis": redis}
+        finally:
+            await pool.close()
+            await redis.aclose()
 
 
 @asynccontextmanager

@@ -25,7 +25,7 @@ async def process_message(message, ctx, detector):
 
         async with get_redis(ctx) as redis:
             message = {
-                "jobId": job_id,
+                "jobId": str(job_id),
                 "status": "started",
                 "timestamp": start_time.isoformat(),
             }
@@ -39,9 +39,12 @@ async def process_message(message, ctx, detector):
                 )
 
         print(
-            f"WORKER:[process_message][{start_time}] Started Job: {job_id} PID={os.getpid()} thread id={threading.get_ident()}, name={threading.current_thread().name}"
+            f"WORKER[process_message][{start_time}] Started Job: {job_id} PID={os.getpid()} thread id={threading.get_ident()}, name={threading.current_thread().name}"
         )
 
+        ################################ Move to modal function #################################################
+        #                                                                                                       #
+        #                                                                                                       #
         # Download S3
         bucket_name = os.getenv("S3_BUCKET")
 
@@ -58,6 +61,10 @@ async def process_message(message, ctx, detector):
             while file_data := await stream.read(1024 * 1024):
                 await f.write(file_data)
 
+        #                                                                                                       #
+        #                                                                                                       #
+        ##########################################################################################################
+
         async with get_redis(ctx) as redis:
             message = {
                 "jobId": job_id,
@@ -66,6 +73,9 @@ async def process_message(message, ctx, detector):
             }
             await redis.publish("job_updates", json.dumps(message))
 
+        ################################# Move to modal function ################################################
+        #                                                                                                       #
+        #                                                                                                       #
         # Detection
         try:
             result = await asyncio.to_thread(
@@ -74,9 +84,12 @@ async def process_message(message, ctx, detector):
 
             finish_time = datetime.now(timezone.utc)
             print(
-                f"WORKER:[process_message][{finish_time}] Finished Job: {job_id} PID={os.getpid()}"
+                f"WORKER[process_message][{finish_time}] Finished Job: {job_id} PID={os.getpid()}"
             )
 
+            #                                                                                                       #
+            #                                                                                                       #
+            ##########################################################################################################
             async with get_redis(ctx) as redis:
                 message = {
                     "jobId": job_id,
@@ -85,15 +98,18 @@ async def process_message(message, ctx, detector):
                 }
                 await redis.publish("job_updates", json.dumps(message))
 
+            ################################# Move to modal function ################################################
+            #                                                                                                       #
+            #                                                                                                       #
             # S3 upload
             print("WORKER[process_message]: Uploading results to S3 ...")
-            output_key = f"results/{job_id}_processed.mp4"
+            output_key = f"results/{job_id}/{job_id}_processed.mp4"
             async with aiofiles.open(output_path, "rb") as f:
                 file_data = await f.read()
                 await s3.put_object(Bucket=bucket_name, Key=output_key, Body=file_data)
 
             # Upload all data files
-            heatmap_dir = Path(f"/tmp/{job_id}/heatmap")
+            heatmap_dir = Path(f"/tmp/{job_id}/heatmaps")
 
             if heatmap_dir.exists():
                 print(
@@ -105,7 +121,7 @@ async def process_message(message, ctx, detector):
                 )
 
                 for heatmap_file in heatmap_files:
-                    s3_key = f"results/{job_id}/heatmap/{heatmap_file.name}"
+                    s3_key = f"results/{job_id}/heatmaps/{heatmap_file.name}"
 
                     async with aiofiles.open(heatmap_file, "rb") as f:
                         file_data = await f.read()
@@ -118,6 +134,10 @@ async def process_message(message, ctx, detector):
                 print(
                     "WORKER[process_message][uploading artifacts]: heatmap_dir did not exist"
                 )
+
+            #                                                                                                       #
+            #                                                                                                       #
+            ##########################################################################################################
 
             # CREATE TABLE jobs (
             #   id UUID PRIMARY KEY,
@@ -184,8 +204,8 @@ async def process_message(message, ctx, detector):
 
                         # Insert game and get game_id
                         await cur.execute(
-                            "INSERT INTO games (job_id) VALUES (%s)",
-                            (job_id),
+                            "INSERT INTO games (job_id) VALUES (%s) RETURNING id",
+                            (job_id,),
                         )
                         game_id = (await cur.fetchone())[0]
 
@@ -209,13 +229,20 @@ async def process_message(message, ctx, detector):
                         ) in result.team_assignments.items():
                             db_team_id = team_ids[detector_team_id]
                             await cur.execute(
-                                "INSERT INTO players (game_id, tracker_id, team_id) VALUES (%s, %s, %s) RETURNING id",
-                                (game_id, tracker_id, db_team_id),
+                                "INSERT INTO players (game_id, tracker_id, team_id, display_name) VALUES (%s, %s, %s) RETURNING id",
+                                (
+                                    game_id,
+                                    tracker_id,
+                                    db_team_id,
+                                    f"Player {tracker_id + 1}",
+                                ),
                             )
                             db_player_id = (await cur.fetchone())[0]
 
                             if heatmap_dir.exists():
-                                for heatmap_file in heatmap_dir.glob("*.json"):
+                                for heatmap_file in heatmap_dir.glob(
+                                    f"player{tracker_id}_*.json"
+                                ):
                                     # Parse filename get type
                                     # Format: player{id}_{histogram | kde}.json
                                     filename = heatmap_file.stem
@@ -238,24 +265,25 @@ async def process_message(message, ctx, detector):
                 message = {
                     "jobId": job_id,
                     "status": "completed",
+                    "gameId": str(game_id),
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
                 await redis.publish("job_updates", json.dumps(message))
-        finally:
-            for path in [local_path, output_path]:
-                if os.path.exists(path):
-                    os.remove(path)
 
 
 async def wrap_context(process_id):
+    print(f"WORKER[process: {process_id}][wrap_context]")
     async with process_context() as ctx:
+        print(f"WORKER[process: {process_id}][wrap_context][process_context]")
         detector = Detector(
             player_weights="/app/data/models/player_detection.pt",
             field_weights="/app/data/models/field_keypoint_detection.pt",
         )
         rabbitmq_url = os.getenv("RABBITMQ_URL")
         if rabbitmq_url is None:
-            raise RuntimeError("RABBITMQ_URL env variable is required.")
+            raise RuntimeError(
+                f"WORKER[process: {process_id}][wrap_context][process_context][RuntimeError]: RABBITMQ_URL env variable is required."
+            )
         try:
             # RabbitMQ
             connection = await aio_pika.connect_robust(rabbitmq_url, heartbeat=3600)
@@ -265,10 +293,15 @@ async def wrap_context(process_id):
                 queue = await channel.declare_queue("worker_queue", durable=True)
 
                 async def on_message(message):
+                    print(
+                        f"WORKER[process: {process_id}][wrap_context][process_context][on_message]"
+                    )
                     try:
                         await process_message(message, ctx, detector)
                     except Exception as e:
-                        print(f"Worker {process_id}: Error processing message: {e}")
+                        print(
+                            f"WORKER[process: {process_id}][on_message][Exception]: Error processing message: {e}"
+                        )
                         import traceback
 
                         traceback.print_exc()

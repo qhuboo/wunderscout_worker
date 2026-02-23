@@ -9,35 +9,52 @@ load_dotenv()
 
 async def async_worker(process_id):
     """Main async function for each worker process"""
+    print(
+        f"WORKER[process: {process_id}][async_worker]: Main async function for each worker process."
+    )
     await wrap_context(process_id)
 
 
 def start_process(process_id):
     """Entry point for each worker process"""
-    print(f"Process {process_id} starting with PID: {os.getpid()}")
+    print(
+        f"WORKER[process: {process_id}][start_process]: Entry point for each worker process."
+    )
+    print(
+        f"WORKER[process: {process_id}][start_process]: Process {process_id} starting with PID: {os.getpid()}"
+    )
     try:
         asyncio.run(async_worker(process_id))
     except KeyboardInterrupt:
-        print(f"Process {process_id}: Interrupted.")
+        print(
+            f"WORKER[process: {process_id}][start_process][KeyboardInterrupt]: Process {process_id}: Interrupted."
+        )
     except Exception as e:
-        print(f"Process {process_id}: Fatal error: {e}")
+        print(
+            f"WORKER[process: {process_id}][start_process][Exception]: Process {process_id}: Fatal error: {e}"
+        )
         raise e
 
 
 def main():
+    print("WORKER[main process][main]: Main.")
     NUM_WORKER_PROCESSES = 4
     try:
         multiprocessing.set_start_method("spawn")
     except RuntimeError:
-        print("Spawn start method already set.")
+        print(
+            "WORKER[main process][main][RuntimeError]: Spawn start method already set."
+        )
         pass
 
-    print(f"Main process (PID {os.getpid()}): Starting with 'spawn' method.")
+    print(
+        f"WORKER[main process][main]: Main process (PID {os.getpid()}): Starting with 'spawn' method."
+    )
 
     processes = []
 
     # Start the processes
-    print(f"Main process: Starting {NUM_WORKER_PROCESSES} processes ...")
+    print(f"WORKER[main process][main]: Starting {NUM_WORKER_PROCESSES} processes ...")
     for i in range(NUM_WORKER_PROCESSES):
         p = multiprocessing.Process(target=start_process, args=(i,))
         processes.append(p)
@@ -47,23 +64,29 @@ def main():
         for p in processes:
             p.join()
     except KeyboardInterrupt:
-        print("Main process: KeyboardInterrupt (ctrl + c). Shutting down ...)")
+        print(
+            "WORKER[main process][main][KeyboardInterrupt]: KeyboardInterrupt (ctrl + c). Shutting down ...)"
+        )
         for p in processes:
             if p.is_alive():
-                print(f"Main process: Process {p.pid} terminating ...")
+                print(
+                    f"WORKER[main process][main][KeyboardInterrupt]: Process {p.pid} terminating ..."
+                )
                 p.terminate()
                 p.join(timeout=2)
                 if p.is_alive():
                     print(
-                        f"Main process: Process {p.pid} did not terminate gracefully."
+                        f"WORKER[main process][main][KeyboardInterrupt]: Process {p.pid} did not terminate gracefully."
                     )
     except Exception as e:
-        print(f"Main process: Unexpected error: {e}.")
+        print(f"WORKER[main process][main][Exception]: Unexpected error: {e}.")
     finally:
-        print("Main process: All child processes have been managed.")
-        print("Main process: Exiting ...")
+        print(
+            "WORKER[main process][main][finally]: All child processes have been managed."
+        )
+        print("WORKER[main process][main][finally]: Exiting ...")
 
 
 if __name__ == "__main__":
-    print("Inside the main guard.")
+    print("WORKER[main process][main guard]: Inside the main guard.")
     main()

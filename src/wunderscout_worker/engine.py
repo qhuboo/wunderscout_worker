@@ -6,10 +6,10 @@ from wunderscout import DataExporter, HeatmapGenerator
 
 def process_video(local_path, output_path, job_id, detector):
     print(
-        f"[process_video][{time.strftime('%X')}] Job {job_id} running in thread {threading.get_ident()}"
+        f"WORKER[process_video][{time.strftime('%X')}] Job {job_id} running in thread {threading.get_ident()}"
     )
     if torch.cuda.is_available():
-        print("GPU name: ", torch.cuda.get_device_name(0))
+        print("WORKER[process_video]: GPU name: ", torch.cuda.get_device_name(0))
 
         # Run detector
         result = detector.run(local_path, output_path)
@@ -32,27 +32,29 @@ def process_video(local_path, output_path, job_id, detector):
                 # Save histogram (if available)
                 if "histogram" in heatmap_data:
                     histogram_path = (
-                        f"/tmp/{job_id}/heatmap/player{player_id}_histogram.json"
+                        f"/tmp/{job_id}/heatmaps/player{player_id}_histogram.json"
                     )
                     heatmap_gen.save_heatmap(heatmap_data["histogram"], histogram_path)
                 else:
-                    print(f"No histogram data for player {player_id}")
+                    print(
+                        f"WORKER[process_video]: No histogram data for player {player_id}"
+                    )
 
                 # Save KDE (if available)
                 if "kde" in heatmap_data:
-                    kde_path = f"/tmp/{job_id}/heatmap/player{player_id}_kde.json"
+                    kde_path = f"/tmp/{job_id}/heatmaps/player{player_id}_kde.json"
                     heatmap_gen.save_heatmap(heatmap_data["kde"], kde_path)
                 else:
                     print(
-                        f"No KDE data for player {player_id} (insufficient samples/variation)"
+                        f"WORKER[process_video]: No KDE data for player {player_id} (insufficient samples/variation)"
                     )
 
             except ValueError as e:
                 print(
-                    f"Warning: Could not generate heatmap for player {player_id}: {e}"
+                    f"WORKER[process_video][ValueError]: Warning: Could not generate heatmap for player {player_id}: {e}"
                 )
 
         return result
 
     else:
-        print("No GPU Access")
+        print("WORKER[process_video]: No GPU Access")
