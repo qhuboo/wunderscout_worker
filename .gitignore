@@ -28,6 +28,7 @@ secrets/
 
 # Test data
 data/
+content.md
 
 # Config
 pyrightconfig.json

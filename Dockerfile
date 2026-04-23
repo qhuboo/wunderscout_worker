@@ -43,7 +43,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-editable
 
 # Run the worker (via the script defined in pyproject.toml)
-CMD ["worker"]
+CMD ["uv", "run", "worker"]
 
 # *********************** Development *************************
 FROM base AS development
